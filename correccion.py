@@ -5,25 +5,26 @@ import numpy as np
 st.set_page_config(page_title="Buscador Alcoholimetría DUSA", layout="centered")
 
 @st.cache_data
-def cargar_datos_limpios():
-    # Cargamos tu Excel. Si es el CSV, cambia pd.read_excel por pd.read_csv
-    df = pd.read_excel("Libro Alcoholimetria Python.xlsx")
+def cargar_excel_flexible():
+    # Cargamos el archivo completo sin procesar
+    df = pd.read_excel("Libro Alcoholimetria Python.xlsx", header=None)
     
-    # Nos aseguramos de que Python trate todo como número (punto decimal)
+    # Función para limpiar cualquier valor y convertirlo en número (manejando comas)
     def a_numero(x):
         try:
+            if pd.isna(x): return np.nan
             return float(str(x).replace(',', '.'))
         except:
             return np.nan
 
+    # Limpiamos todo el DataFrame celda por celda
     df_num = df.map(a_numero)
-    return df_num
+    return df_num, df
 
 try:
-    df = cargar_datos_limpios()
+    df_num, df_orig = cargar_excel_flexible()
     
     st.title("Corrección de Volumen DUSA")
-    st.info("Buscando en base de datos limpia (A: Temperatura, B-K: Grados, L: Factor)")
 
     col1, col2 = st.columns(2)
     with col1:
@@ -31,46 +32,59 @@ try:
     with col2:
         g_user = st.number_input("Grado Real Leído:", value=96.5, step=0.1, format="%.1f")
 
-    # La tolerancia la dejamos interna para que no falle (0.05 es ideal)
-    tolerancia = 0.05
-
     if st.button("CALCULAR AHORA", use_container_width=True):
-        # 1. Buscamos todas las filas donde la temperatura sea la que pusiste
-        # Usamos un pequeño margen para la temperatura por si hay decimales invisibles
-        bloque_temp = df[ (df.iloc[:, 0] - t_user).abs() < 0.1 ]
+        # 1. Buscamos todas las filas donde la COLUMNA 0 sea igual a la temperatura
+        # Usamos un margen de error (0.01) para evitar problemas de precisión decimal
+        indices_temp = df_num[ (df_num[0] - t_user).abs() < 0.01 ].index.tolist()
 
-        if not bloque_temp.empty:
-            # 2. En ese bloque, buscamos el Grado Real más cercano en las columnas B a K (1 a 10)
-            matriz_grados = bloque_temp.iloc[:, 1:11]
-            
-            # Calculamos la distancia al valor buscado
-            distancias = (matriz_grados - g_user).abs()
-            min_error = distancias.min().min()
+        if indices_temp:
+            mejor_error = 999
+            resultado = None
 
-            if min_error <= tolerancia:
-                # 3. Localizamos la celda exacta
-                # Obtenemos la columna y la fila del valor más cercano
-                col_nombre = distancias.min(axis=0).idxmin()
-                fila_idx = distancias[col_nombre].idxmin()
+            # 2. De esas filas encontradas, buscamos el Grado Real en las columnas 1 a 10
+            for idx in indices_temp:
+                fila_datos = df_num.iloc[idx, 1:11]
+                distancias = (fila_datos - g_user).abs()
+                
+                if distancias.min() < mejor_error:
+                    mejor_error = distancias.min()
+                    col_idx = distancias.idxmin()
+                    fila_idx = idx
+                    
+                    # 3. Localizar el encabezado (Grado Aparente)
+                    # Subimos desde la fila encontrada hasta hallar la fila de títulos de ese bloque
+                    cursor = fila_idx
+                    while cursor > 0:
+                        # Buscamos la fila que tiene los grados (5.0, 5.1...) 
+                        # Se reconoce porque la celda de temperatura (col 0) está vacía o tiene texto como "ºC"
+                        val_temp_col = str(df_orig.iloc[cursor, 0]).strip().lower()
+                        if pd.isna(df_num.iloc[cursor, 0]) or "º" in val_temp_col or "temp" in val_temp_col:
+                            fila_cabecera = cursor
+                            break
+                        cursor -= 1
+                    
+                    # En tu base limpia, si no hay "ºC", el encabezado es la fila inmediatamente superior al bloque
+                    # Por seguridad, si el bucle no detecta nada, tomamos la fila 1 (donde suelen estar los grados)
+                    if 'fila_cabecera' not in locals(): fila_cabecera = 1
 
-                # 4. Resultados finales
-                # Grado aparente: Es el nombre de la columna donde se encontró
-                # Factor: Es el valor de la columna 11 (L) en esa misma fila
-                grado_aparente = col_nombre
-                factor_v20 = df.iloc[fila_idx, 11]
+                    grado_aparente = df_orig.iloc[fila_cabecera, col_idx]
+                    factor_v20 = df_orig.iloc[fila_idx, 11] # Columna L
 
+                    resultado = (grado_aparente, factor_v20)
+
+            if resultado and mejor_error < 0.2:
                 st.markdown("---")
                 c1, c2 = st.columns(2)
-                c1.metric("Grado Aparente", f"{grado_aparente} °GL")
-                c2.metric("Factor (V20)", f"{factor_v20}")
-                st.success(f"Coincidencia encontrada a {t_user} °C")
+                c1.metric("Grado Aparente", f"{resultado[0]} °GL")
+                c2.metric("Factor (V20)", f"{resultado[1]}")
+                st.success(f"Encontrado con éxito en la base de datos.")
             else:
-                st.warning(f"No se encontró el grado {g_user} en la tabla de {t_user}°C (Error: {min_error:.3f})")
+                st.warning(f"No se encontró el grado {g_user} para {t_user}°C.")
         else:
-            st.error(f"La temperatura {t_user}°C no existe en la base de datos.")
+            st.error(f"No se encontró ninguna fila con la temperatura {t_user}°C. Revisa el formato de la columna A.")
 
 except Exception as e:
-    st.error(f"Error en la base de datos: {e}")
+    st.error(f"Ocurrió un error: {e}")
 
 
 
