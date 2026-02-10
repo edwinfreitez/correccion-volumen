@@ -1,76 +1,75 @@
 import streamlit as st
 import pandas as pd
 
-st.set_page_config(page_title="Corrección de Volumen - DUSA", layout="centered")
+st.set_page_config(page_title="Corrección de Volumen DUSA", layout="centered")
 
-# Estilos visuales
+# Estilos para que se vea bien
 st.markdown("""
     <style>
     .titulo { font-size: 1.8rem; font-weight: bold; color: #2E4053; }
-    .azul-dusa { color: #2E86C1; font-weight: bold; }
+    .resultado { font-size: 20px; color: #2E86C1; font-weight: bold; }
     </style>
 """, unsafe_allow_html=True)
 
-st.markdown('<p class="titulo">CORRECCIÓN DE VOLUMEN</p>', unsafe_allow_html=True)
-st.write("Base de Datos Oficial - Destilerías Unidas S.A.")
-
 @st.cache_data
-def cargar_y_limpiar():
-    # Cargamos el archivo
-    df = pd.read_csv("Libro Alcoholimetria Python.csv", sep=";", decimal=",", skiprows=1)
+def cargar_datos_excel():
+    # Cargamos el Excel. skiprows=1 para saltar la primera fila de título
+    df = pd.read_excel("Libro Alcoholimetria Python.xlsx", skiprows=1)
     
-    # Forzar nombres de columnas
-    # La primera es Temp, de la 1 a la 10 son Grados Ap., la última es Factor
-    nuevos_nombres = ["Temp"] + [str(df.columns[i]) for i in range(1, len(df.columns)-1)] + ["Factor"]
-    df.columns = nuevos_nombres
+    # Nos aseguramos de tomar solo las primeras 12 columnas (A hasta L)
+    df = df.iloc[:, :12]
     
-    # Convertir todo a numérico por si acaso hay espacios o textos ocultos
-    for col in df.columns:
-        df[col] = pd.to_numeric(df[col].astype(str).str.replace(',', '.'), errors='coerce')
+    # Renombramos para no tener errores con los nombres de las columnas
+    # Temp | 10 columnas de Grados Aparentes | Factor
+    nuevas_cols = ["Temp"] + [str(df.columns[i]) for i in range(1, 11)] + ["Factor"]
+    df.columns = nuevas_cols
     
+    # Limpieza: Convertir a número y quitar filas vacías que pueda traer Excel
+    df = df.dropna(subset=["Temp"]) 
     return df
 
 try:
-    df = cargar_y_limpiar()
+    df_tabla = cargar_datos_excel()
+
+    st.markdown('<p class="titulo">BUSCADOR DE ALCOHOLIMETRÍA (EXCEL)</p>', unsafe_allow_html=True)
 
     col1, col2 = st.columns(2)
     with col1:
-        t_user = st.number_input("Temperatura (°C):", value=28.0, step=0.5)
+        t_user = st.number_input("Temperatura (°C):", value=28.0, step=0.5, format="%.1f")
     with col2:
-        g_user = st.number_input("Grado Real Leído:", value=96.5, step=0.1)
+        g_user = st.number_input("Grado Real Leído:", value=96.5, step=0.1, format="%.1f")
 
-    if st.button("CALCULAR AHORA", use_container_width=True):
-        # 1. Filtro estricto por temperatura
-        # Buscamos la fila que coincida exactamente o la más cercana
-        temp_val = df.iloc[(df['Temp'] - t_user).abs().argsort()[:1]]['Temp'].values[0]
-        bloque_temp = df[df['Temp'] == temp_val]
+    if st.button("CALCULAR VALORES", use_container_width=True):
+        # 1. Filtrar por la temperatura más cercana
+        temp_val = df_tabla.iloc[(df_tabla['Temp'] - t_user).abs().argsort()[:1]]['Temp'].values[0]
+        bloque_filas = df_tabla[df_tabla['Temp'] == temp_val]
 
-        # 2. Buscar el valor más cercano en el cuerpo de la tabla (Columnas de Grado Aparente)
-        # Seleccionamos solo las columnas intermedias
-        matriz = bloque_temp.iloc[:, 1:-1]
+        # 2. Buscar en la matriz de grados (columnas de la 1 a la 10)
+        matriz_grados = bloque_filas.iloc[:, 1:11]
         
-        # Encontramos la diferencia mínima absoluta
-        diff = (matriz - g_user).abs()
-        min_diff = diff.min().min()
+        # Encontrar la diferencia mínima con el grado real ingresado
+        distancias = (matriz_grados - g_user).abs()
+        min_error = distancias.min().min()
         
-        # Localizamos la columna y la fila del valor ganador
-        # Buscamos en qué columna está ese valor mínimo
-        columna_ganadora = diff.min(axis=0).idxmin()
-        # Buscamos en qué fila de ese bloque está el valor
-        fila_indice_ganador = diff[columna_ganadora].idxmin()
+        # Localizar la columna (Grado Aparente) y la fila (para el Factor)
+        col_ganadora = distancias.min(axis=0).idxmin()
+        fila_idx = distancias[col_ganadora].idxmin()
         
-        # 3. Extraer resultados
-        grado_aparente = columna_ganadora
-        factor_v20 = df.loc[fila_indice_ganador, "Factor"]
+        # 3. Obtener resultados finales
+        grado_aparente = col_ganadora
+        factor_final = df_tabla.loc[fila_idx, "Factor"]
 
         # Mostrar resultados
-        st.markdown('<p class="azul-dusa">RESULTADOS ENCONTRADOS:</p>', unsafe_allow_html=True)
-        c1, c2 = st.columns(2)
-        c1.metric("Grado Aparente", f"{grado_aparente} °GL")
-        c2.metric("Factor (V20)", f"{factor_v20:.3f}")
+        st.markdown("---")
+        st.markdown('<p class="resultado">RESULTADOS:</p>', unsafe_allow_html=True)
         
-        st.caption(f"Validado con Temperatura: {temp_val} °C")
+        res1, res2 = st.columns(2)
+        res1.metric("Grado Aparente", f"{grado_aparente} °GL")
+        res2.metric("Factor (V20)", f"{factor_final:.3f}")
+        
+        st.caption(f"Búsqueda exitosa en tabla de {temp_val} °C")
 
 except Exception as e:
-    st.error(f"Error técnico: {e}")
+    st.error(f"Error al leer el archivo Excel: {e}")
+    st.info("Revisa que el archivo se llame: Libro Alcoholimetria Python.xlsx")
 
