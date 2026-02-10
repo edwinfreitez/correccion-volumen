@@ -4,98 +4,73 @@ import numpy as np
 
 st.set_page_config(page_title="Buscador Alcoholimetría DUSA", layout="centered")
 
-# --- FUNCIONES LÓGICAS DE LA MACRO ---
-
-def redondear05(num):
-    """Clon de la función redondear05 de tu VBA"""
-    parte_entera = int(num)
-    parte_decimal = num - parte_entera
-    if parte_decimal < 0.25:
-        return float(parte_entera)
-    elif parte_decimal < 0.75:
-        return float(parte_entera + 0.5)
-    else:
-        return float(parte_entera + 1)
-
 @st.cache_data
-def cargar_datos_maestros():
-    # Cargamos el Excel completo
-    df = pd.read_excel("Libro Alcoholimetria Python.xlsx", header=None)
+def cargar_datos_limpios():
+    # Cargamos tu Excel. Si es el CSV, cambia pd.read_excel por pd.read_csv
+    df = pd.read_excel("Libro Alcoholimetria Python.xlsx")
     
-    # Limpieza de comas a puntos para que Python entienda los números
-    def limpia(x):
-        if pd.isna(x): return np.nan
+    # Nos aseguramos de que Python trate todo como número (punto decimal)
+    def a_numero(x):
         try:
             return float(str(x).replace(',', '.'))
         except:
             return np.nan
 
-    df_num = df.map(limpia)
-    return df_num, df
-
-# --- INTERFAZ ---
-st.title("Corrección de Volumen (Lógica Macro)")
+    df_num = df.map(a_numero)
+    return df_num
 
 try:
-    df_num, df_orig = cargar_datos_maestros()
+    df = cargar_datos_limpios()
     
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        t_raw = st.number_input("Temp. Usuario (°C):", value=28.0, step=0.1)
-    with col2:
-        gr_raw = st.number_input("Grado Real Usuario:", value=96.5, step=0.01)
-    with col3:
-        tolerancia = st.number_input("Tolerancia:", value=0.02, step=0.01, format="%.2f")
+    st.title("Corrección de Volumen DUSA")
+    st.info("Buscando en base de datos limpia (A: Temperatura, B-K: Grados, L: Factor)")
 
-    if st.button("BUSCAR FACTOR (VBA STYLE)", use_container_width=True):
-        # Aplicamos el redondeo de la macro
-        temp_buscada = redondear05(t_raw)
-        
-        # 1. Filtrar filas por la temperatura redondeada (Columna A / Índice 0)
-        filas_temp = df_num[df_num[0] == temp_buscada].index.tolist()
-        
-        encontrado = False
-        for idx in filas_temp:
-            # 2. Buscar el Grado Real en las columnas B a K (índices 1 a 10)
-            fila_datos = df_num.iloc[idx, 1:11]
+    col1, col2 = st.columns(2)
+    with col1:
+        t_user = st.number_input("Temperatura (°C):", value=28.0, step=0.5, format="%.1f")
+    with col2:
+        g_user = st.number_input("Grado Real Leído:", value=96.5, step=0.1, format="%.1f")
+
+    # La tolerancia la dejamos interna para que no falle (0.05 es ideal)
+    tolerancia = 0.05
+
+    if st.button("CALCULAR AHORA", use_container_width=True):
+        # 1. Buscamos todas las filas donde la temperatura sea la que pusiste
+        # Usamos un pequeño margen para la temperatura por si hay decimales invisibles
+        bloque_temp = df[ (df.iloc[:, 0] - t_user).abs() < 0.1 ]
+
+        if not bloque_temp.empty:
+            # 2. En ese bloque, buscamos el Grado Real más cercano en las columnas B a K (1 a 10)
+            matriz_grados = bloque_temp.iloc[:, 1:11]
             
-            # Aplicamos la lógica de tolerancia de la macro: Abs(celda - buscado) < tolerancia
-            coincidencias = (fila_datos - gr_raw).abs() < tolerancia
-            
-            if coincidencias.any():
-                col_idx = coincidencias.idxmax() # Obtiene la primera columna que cumple
-                
-                # 3. Obtener Grado Aparente (Buscando el encabezado del bloque)
-                # Subimos desde la fila actual hasta encontrar la fila de "Grados Aparentes"
-                cursor = idx
-                while cursor > 0:
-                    # En la macro la cabecera suele estar en la fila 5 del bloque
-                    # Aquí buscamos la fila que tiene los títulos (5.0, 5.1...)
-                    # Se reconoce porque la celda de temp (col 0) está vacía o dice "ºC"
-                    if pd.isna(df_num.iloc[cursor, 0]) or str(df_orig.iloc[cursor, 0]).strip() == "ºC":
-                        fila_cabecera = cursor
-                        break
-                    cursor -= 1
-                
-                grado_aparente = df_orig.iloc[fila_cabecera, col_idx]
-                factor_v20 = df_orig.iloc[idx, 11] # Columna L (Índice 11)
-                
-                # Mostrar resultados igual que la macro
+            # Calculamos la distancia al valor buscado
+            distancias = (matriz_grados - g_user).abs()
+            min_error = distancias.min().min()
+
+            if min_error <= tolerancia:
+                # 3. Localizamos la celda exacta
+                # Obtenemos la columna y la fila del valor más cercano
+                col_nombre = distancias.min(axis=0).idxmin()
+                fila_idx = distancias[col_nombre].idxmin()
+
+                # 4. Resultados finales
+                # Grado aparente: Es el nombre de la columna donde se encontró
+                # Factor: Es el valor de la columna 11 (L) en esa misma fila
+                grado_aparente = col_nombre
+                factor_v20 = df.iloc[fila_idx, 11]
+
                 st.markdown("---")
-                st.subheader("Resultados:")
                 c1, c2 = st.columns(2)
                 c1.metric("Grado Aparente", f"{grado_aparente} °GL")
                 c2.metric("Factor (V20)", f"{factor_v20}")
-                
-                st.info(f"Temp. ajustada a: {temp_buscada} °C | Tolerancia aplicada: {tolerancia}")
-                encontrado = True
-                break
-        
-        if not encontrado:
-            st.warning(f"No se encontró el valor {gr_raw} para la temperatura {temp_buscada} °C con la tolerancia actual.")
+                st.success(f"Coincidencia encontrada a {t_user} °C")
+            else:
+                st.warning(f"No se encontró el grado {g_user} en la tabla de {t_user}°C (Error: {min_error:.3f})")
+        else:
+            st.error(f"La temperatura {t_user}°C no existe en la base de datos.")
 
 except Exception as e:
-    st.error(f"Error técnico: {e}")
+    st.error(f"Error en la base de datos: {e}")
 
 
 
